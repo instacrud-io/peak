@@ -1,4 +1,11 @@
 # peak
+Peak is a CLI tool to help to generate instant api using Node Express framework, using postgress DB 
+
+## Prerequisite
+1. Make sure you have GO installed in your local, follow the below link to set GO on your local machine
+   https://golang.org/doc/install
+
+2. Make sure node is installed in your local machine
 
 ## Set up 
     go get github.com/instacrud-io/peak 
