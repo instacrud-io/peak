@@ -16,49 +16,33 @@ limitations under the License.
 package cmd
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
-	"os/exec"
-
-	"database/sql"
 	"html/template"
-	"log"
 	"os"
-	"regexp"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/heraju/mestri"
 	"github.com/instacrud-io/peak/templates"
 	"github.com/spf13/cobra"
-
-	"github.com/heraju/mestri"
-
-	_ "github.com/lib/pq"
 )
 
-var root = ""
-var rootDir = ""
-
-// initCmd represents the init command
-var initCmd = &cobra.Command{
-	Use:   "init",
-	Short: "INIT :: => Creating your Express APP",
-	Long:  `Init ==> Creating your Express APP`,
+// EchoCmd represents the init command
+var EchoCmd = &cobra.Command{
+	Use:   "echo",
+	Short: "ECHO :: => Creating your ECHO APP",
+	Long:  `ECHO ==> Creating your ECHO APP`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("Creating your APP!!")
-		peakInit(cmd)
+		echoinit(cmd)
 	},
 }
 
-func init() {
-	rootCmd.AddCommand(initCmd)
-	rootCmd.AddCommand(EchoCmd)
-	initCmd.Flags().StringP("app", "a", "", "App where the git repository will be initialized.")
-	EchoCmd.Flags().StringP("app", "a", "", "App where the git repository will be initialized.")
-}
-
-func peakInit(cmd *cobra.Command) error {
+func echoinit(cmd *cobra.Command) error {
 	folder, _ := cmd.Flags().GetString("app")
 
 	if folder == "" {
@@ -71,92 +55,76 @@ func peakInit(cmd *cobra.Command) error {
 		fmt.Printf("Could not create the directory %v", err)
 	}
 	fmt.Println("Git repository initialized in " + folder)
-	root = folder
-	rootDir = folder + "/"
-	createApp()
+	createEchoApp(folder)
+
 	command = exec.Command("cd", folder)
 	err = command.Run()
 	if err != nil {
 		fmt.Printf("Could not move to directory %v", err)
 	}
-	command = exec.Command("npm", "install")
+	command = exec.Command("go", "mod", "init")
 	err = command.Run()
 	if err != nil {
-		fmt.Printf("Could not move to directory %v", err)
+		fmt.Printf("GO MOD failed %v", err)
 	}
-	command = exec.Command("node", "app.js")
+	command = exec.Command("go", "run", "cmd/start.go")
 	err = command.Run()
 	if err != nil {
-		fmt.Printf("Could not move to directory %v", err)
+		fmt.Printf("GO run start %v", err)
 	}
 	return nil
 }
 
-// Model : Entity for model
-type Model struct {
-	Package   string
-	ModelName string
-}
-
-// Attr : Entity for model
-type Attr struct {
-	DataType   string
-	ModelName  string
-	KeyType    string
-	ReaderType string
-}
-
-func createApp() {
+func createEchoApp(app string) {
 	db, err := sql.Open("postgres", mestri.PsqlInfo)
 	die(err)
 	defer db.Close()
-
+	err = db.Ping()
+	die(err)
 	rows, err := db.Query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
-
+	die(err)
 	entities := make([]string, 0)
 	models := make([]Model, 0)
-	cleanApp()
+	echoCleanApp(app)
 	for rows.Next() {
 		var table_name string
 		err := rows.Scan(&table_name)
 		die(err)
-		buildEntity(table_name, db)
-		entities = append(entities, table_name)
-		models = append(models, Model{Package: table_name, ModelName: toCamelCase(table_name)})
-
+		pass := echoBuildEntity(table_name, db, app)
+		fmt.Print(table_name)
+		if pass {
+			entities = append(entities, table_name)
+			models = append(models, Model{Package: table_name, ModelName: toCamelCase(table_name)})
+		}
 	}
-	buildApp(entities, models)
+	echoBuildApp(entities, models, app)
+	buildStart(app)
+	buildHelpers(app)
 	fmt.Print(entities)
 }
 
-func cleanApp() {
-	_, err := os.Stat(root)
-	if os.IsNotExist(err) {
-		errDir := os.MkdirAll(root, 0755)
-		if errDir != nil {
-			log.Fatal(err)
-		}
-
-	} else {
-		os.RemoveAll(rootDir)
-		errDir := os.MkdirAll(root, 0755)
-		if errDir != nil {
-			log.Fatal(err)
-		}
-	}
+func echoCleanApp(app string) {
+	_, err := os.Stat(app)
+	die(err)
+	serviceFolder := app + "/services"
+	err = os.MkdirAll(serviceFolder, 0755)
+	die(err)
+	cmdFolder := app + "/cmd"
+	err = os.MkdirAll(cmdFolder, 0755)
+	die(err)
+	helperFolder := app + "/helpers"
+	err = os.MkdirAll(helperFolder, 0755)
+	die(err)
 }
 
-func buildApp(entities []string, models []Model) bool {
-	buidPackageFile()
-	buidDbFile()
-	fileName := rootDir + "/app.js"
+func echoBuildApp(entities []string, models []Model, app string) bool {
+	dirPath := app + "/services/"
+	fileName := dirPath + "/services.go"
 	f, err := os.Create(fileName)
 	die(err)
 	defer f.Close()
-	appTemplate, err := template.New("webpage").Parse(templates.AppTmpl)
-	if err != nil {
-		die(err)
-	}
+	appTemplate, err := template.New("entity").Parse(templates.EchoServiceTmpl)
+	die(err)
 	appTemplate.Execute(f, struct {
 		Timestamp time.Time
 		Entities  []string
@@ -169,62 +137,53 @@ func buildApp(entities []string, models []Model) bool {
 	return true
 }
 
-func buidPackageFile() bool {
-	fileName := rootDir + "/package.json"
+func buildStart(app string) bool {
+	dirPath := app + "/cmd/"
+	fileName := dirPath + "/start.go"
 	f, err := os.Create(fileName)
 	die(err)
 	defer f.Close()
-	appTemplate, err := template.New("pack").Parse(templates.PkgTmpl)
-	if err != nil {
-		die(err)
-	}
+	appTemplate, err := template.New("entity").Parse(templates.EchoStartTmpl)
+	die(err)
 	appTemplate.Execute(f, struct{}{})
 	return true
 }
 
-func buidDbFile() bool {
-	dirPath := rootDir + "/db/"
+func buildHelpers(app string) bool {
+	dirPath := app + "/helpers/"
+	fileName := dirPath + "/merrors.go"
+	f, err := os.Create(fileName)
+	die(err)
+	defer f.Close()
+	appTemplate, err := template.New("entity").Parse(templates.EchoHelperTmpl)
+	die(err)
+	appTemplate.Execute(f, struct{}{})
+	return true
+}
+
+func echoBuildEntity(table_name string, db *sql.DB, app string) bool {
+	idName := getIdName(table_name, db)
+	if idName == "" {
+		fmt.Println("No Primary for", table_name)
+		return false
+	}
+
+	dirPath := app + "/services/" + table_name
 	err := os.Mkdir(dirPath, 0755)
 	die(err)
-	fileName := rootDir + "db/index.js"
+	fmt.Println("Building CRUD For --- : ", table_name)
+	fileName := dirPath + "/entity.go"
 	f, err := os.Create(fileName)
 	die(err)
 	defer f.Close()
-	appTemplate, err := template.New("pack").Parse(templates.DbTmpl)
-	if err != nil {
-		die(err)
-	}
-	appTemplate.Execute(f, struct{}{})
-	return true
-}
 
-func getIdName(table_name string, db *sql.DB) string {
-	var key_column string
-	sqlStmt := `select kcu.column_name as key_column
-	from information_schema.table_constraints tco
-	join information_schema.key_column_usage kcu 
-	  on kcu.constraint_name = tco.constraint_name
-	  and kcu.constraint_schema = tco.constraint_schema
-	  and kcu.constraint_name = tco.constraint_name
-	where tco.constraint_type = 'PRIMARY KEY' and kcu.table_schema = 'public' and kcu.table_name = $1`
-	row := db.QueryRow(sqlStmt, table_name)
-	err := row.Scan(&key_column)
-	if err != nil {
-		return ""
-	}
-	return key_column
-}
-
-func buildEntity(table_name string, db *sql.DB) bool {
-
-	fmt.Println("Building CRUD For --- : ", table_name)
-
-	idName := getIdName(table_name, db)
-
-	attr, err := db.Query("select column_name, data_type, column_default from information_schema.columns where table_name = $1 order by column_name", table_name)
+	entityTemplate, err := template.New("entity").Parse(templates.EchoEntityTmpl)
 	die(err)
+	attr, err := db.Query("select column_name, data_type, column_default from information_schema.columns where table_name = $1 and table_schema = 'public' order by column_name", table_name)
+
 	entity := make(map[string]Attr)
 	var id_data_type string
+	var is_string_key bool
 	var is_id_auto bool
 
 	for attr.Next() {
@@ -239,22 +198,27 @@ func buildEntity(table_name string, db *sql.DB) bool {
 		case "uuid":
 			data_type_map = "NullString"
 			key_type = "string"
-		case "text":
+		case "text", "timestamp without time zone", "numeric", "character varying":
 			data_type_map = "NullString"
 			key_type = "string"
-		case "integer":
+		case "integer", "bigint":
 			data_type_map = "NullInt64"
 			key_type = "int64"
 		case "timestamp with time zone":
 			data_type_map = "NullString"
 			key_type = "string"
+		case "bit":
+			data_type_map = "NullBool"
+			key_type = "bool"
 		case "json":
 			data_type_map = "NullString"
 			key_type = "string"
 		}
 		if column_name == idName {
 			id_data_type = key_type
-
+			if key_type == "string" {
+				is_string_key = true
+			}
 			if column_default.String != "" {
 				is_id_auto = true
 			}
@@ -262,17 +226,76 @@ func buildEntity(table_name string, db *sql.DB) bool {
 		entity[column_name] = Attr{ReaderType: toCamelCase(key_type), DataType: data_type_map, ModelName: toCamelCase(column_name), KeyType: key_type}
 	}
 
-	buildPgRepo(table_name, entity, id_data_type, idName, is_id_auto)
+	entityTemplate.Execute(f, struct {
+		Timestamp time.Time
+		Model     string
+		Entity    map[string]Attr
+		IdType    string
+		IdName    string
+	}{
+		Timestamp: time.Now(),
+		Model:     table_name,
+		Entity:    entity,
+		IdType:    id_data_type,
+		IdName:    idName,
+	})
+	buildUsecase(table_name, id_data_type, app)
+	echoBuildPgRepo(table_name, entity, id_data_type, idName, is_id_auto, app)
+	buildHandler(table_name, id_data_type, is_string_key, app)
 	return true
 }
 
-func buildPgRepo(table_name string, attributes map[string]Attr, id_data_type string, idName string, is_id_auto bool) bool {
+func buildHandler(table_name string, id_data_type string, is_string_key bool, app string) bool {
+	dirPath := app + "/services/" + table_name
+	fileName := dirPath + "/handler.go"
+	f, err := os.Create(fileName)
+	die(err)
+	defer f.Close()
+	handlerTemplate, err := template.New("entity").Parse(templates.EchoHandlerTmpl)
+	die(err)
+	handlerTemplate.Execute(f, struct {
+		Timestamp  time.Time
+		Entity     string
+		ModelName  string
+		IdType     string
+		IsStingKey bool
+	}{
+		Timestamp:  time.Now(),
+		Entity:     table_name,
+		ModelName:  toCamelCase(table_name),
+		IdType:     id_data_type,
+		IsStingKey: is_string_key,
+	})
+	return true
+}
 
-	dirPath := rootDir + "/controlers/"
+func buildUsecase(table_name string, id_data_type string, app string) bool {
+	dirPath := app + "/services/" + table_name
+	fileName := dirPath + "/usecase.go"
+	f, err := os.Create(fileName)
+	die(err)
+	defer f.Close()
+	useCaseTemplate, err := template.New("entity").Parse(templates.EchoUsecaseTmpl)
+	die(err)
+	useCaseTemplate.Execute(f, struct {
+		Timestamp time.Time
+		Entity    string
+		ModelName string
+		IdType    string
+	}{
+		Timestamp: time.Now(),
+		Entity:    table_name,
+		ModelName: toCamelCase(table_name),
+		IdType:    id_data_type,
+	})
+	return true
+}
 
+func echoBuildPgRepo(table_name string, attributes map[string]Attr, id_data_type string, idName string, is_id_auto bool, app string) bool {
+	dirPath := app + "/services/" + table_name
 	err := os.Mkdir(dirPath, 0755)
 
-	fileName := dirPath + table_name + ".js"
+	fileName := dirPath + "/pgRepository.go"
 	f, err := os.Create(fileName)
 	die(err)
 	defer f.Close()
@@ -285,7 +308,7 @@ func buildPgRepo(table_name string, attributes map[string]Attr, id_data_type str
 		keys = append(keys, k)
 
 	}
-
+	fmt.Print(table_name, is_id_auto)
 	sort.Strings(keys)
 	n := 1
 	for i, ke := range keys {
@@ -314,11 +337,8 @@ func buildPgRepo(table_name string, attributes map[string]Attr, id_data_type str
 	} else {
 		insAttributes = attributes
 	}
-
-	repoTemplate, err := template.New("pack").Parse(templates.EntityTmpl)
-	if err != nil {
-		die(err)
-	}
+	repoTemplate, err := template.New("entity").Parse(templates.EchoRepoTmpl)
+	die(err)
 	repoTemplate.Execute(f, struct {
 		Timestamp        time.Time
 		Entity           string
@@ -348,23 +368,8 @@ func buildPgRepo(table_name string, attributes map[string]Attr, id_data_type str
 		IdName:           idName,
 		UpdateAttributes: updateAttributes,
 		UpAttrLen:        (len(updateAttributes) + 1),
-		IdModelName:      idName,
+		IdModelName:      toCamelCase(idName),
 	})
 
 	return true
-}
-
-// Utility functions
-func die(err error) {
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
-var link = regexp.MustCompile("(^[A-Za-z])|_([A-Za-z])")
-
-func toCamelCase(str string) string {
-	return link.ReplaceAllStringFunc(str, func(s string) string {
-		return strings.ToUpper(strings.Replace(s, "_", "", -1))
-	})
 }
